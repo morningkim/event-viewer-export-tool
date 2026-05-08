@@ -2,3 +2,8 @@ codex_artifacts/
 dist/
 *.evtx
 *.png
+.vscode/
+selenium/
+LICENSE.chromedriver
+pyvenv.cfg
+터미널에서 마우스 좌표 찾기.jpg
