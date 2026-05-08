@@ -1,34 +1,30 @@
 # Event Viewer Image Export
 
-Windows Event Viewer에서 `Winlogon` 로그온/로그오프 기록 화면을 자동으로 열고, 제출용 PNG 이미지로 저장하는 도구입니다.
+Windows 이벤트 뷰어에서 `Winlogon` 로그온/로그오프 기록 화면을 자동으로 열고, 제출용 PNG 이미지로 저장하는 도구입니다.
+
+## 무엇을 하나
+
+- `Logon` 화면은 `Microsoft-Windows-Winlogon / Event ID 7001` 기준으로 찾습니다.
+- `Logoff` 화면은 `Microsoft-Windows-Winlogon / Event ID 7002` 기준으로 찾습니다.
+- 필터된 이벤트를 Event Viewer로 열고, 그 창을 그대로 PNG로 저장합니다.
 
 ## 포함 파일
 
 - `event_viewer_export.ps1`
-  - 실제 동작을 수행하는 PowerShell 스크립트
 - `run_event_viewer_export.bat`
-  - 더블클릭 실행용 배치 파일
+- `event_viewer_export_dist.zip`
 
-## 지원 대상
+배포할 때는 `dist` 폴더나 ZIP 파일만 전달하면 됩니다.
 
-- Windows 데스크톱 환경
-- Event Viewer(`eventvwr.exe`) 사용 가능 환경
-- 대화형 로그인 세션
+## 실행 방법
 
-다음 환경에서는 동작이 불안정하거나 실패할 수 있습니다.
+`run_event_viewer_export.bat`를 더블클릭하면 입력 창이 열립니다.
 
-- 잠금 화면 상태
-- 원격 비대화형 세션
-- 보안 정책상 PowerShell 실행이 차단된 환경
+입력값:
 
-## 사용 방법
-
-1. `run_event_viewer_export.bat`를 더블클릭합니다.
-2. 입력 창에서 아래 값을 넣습니다.
-   - `StartTime`
-   - `EndTime`
-   - `Mode`
-3. `OK`를 누르면 Event Viewer가 자동으로 열리고 PNG가 저장됩니다.
+- `StartTime`
+- `EndTime`
+- `Mode`
 
 권장 시간 형식:
 
@@ -44,12 +40,7 @@ EndTime:   2026-05-07 19:30:00
 Mode:      Logoff
 ```
 
-## 이벤트 기준
-
-- `Logon`: `Microsoft-Windows-Winlogon`, `Event ID 7001`
-- `Logoff`: `Microsoft-Windows-Winlogon`, `Event ID 7002`
-
-## 저장 위치
+## 결과 파일
 
 기본 저장 위치:
 
@@ -57,7 +48,7 @@ Mode:      Logoff
 C:\codex_artifacts
 ```
 
-예시 결과 파일:
+예시 파일:
 
 - `2026-05-07_logon.png`
 - `2026-05-07_logoff.png`
@@ -72,15 +63,23 @@ C:\codex_artifacts
 powershell -ExecutionPolicy Bypass -File .\event_viewer_export.ps1 -StartTime '2026-05-07 19:20:00' -EndTime '2026-05-07 19:30:00' -Mode Logoff
 ```
 
-## 배포 방법
+## 동작 조건
 
-배포할 때는 `dist` 폴더 안의 파일만 전달하면 됩니다.
+- Windows 데스크톱 환경
+- Event Viewer(`eventvwr.exe`) 사용 가능 환경
+- 대화형 로그인 세션
+
+다음 경우에는 실패하거나 결과가 불안정할 수 있습니다.
+
+- 잠금 화면 상태
+- 원격 비대화형 세션
+- PowerShell 실행이 차단된 환경
 
 ## 문제 해결
 
 - `powershell.exe`를 찾을 수 없다고 나오면:
-  - `run_event_viewer_export.bat`의 기본 경로는 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` 입니다.
+  - `run_event_viewer_export.bat`는 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`를 사용합니다.
 - 결과 이미지가 저장되지 않으면:
-  - 지정한 시간 범위 안에 `Winlogon 7001/7002` 이벤트가 실제로 있는지 확인하십시오.
+  - 지정한 시간 범위 안에 `Winlogon 7001` 또는 `7002`가 실제로 있는지 확인하십시오.
 - 원하는 이벤트와 다른 화면이 나오면:
   - 시간 범위를 더 좁혀서 다시 실행하십시오.
