@@ -181,6 +181,34 @@ function Show-ResultForm {
     [void]$form.ShowDialog()
 }
 
+function Get-TargetEventText {
+    param(
+        [psobject]$TargetEvent,
+        [string]$ModeName,
+        [datetime]$Start,
+        [datetime]$End
+    )
+
+    $message = $TargetEvent.FormatDescription()
+    if ($null -eq $message) { $message = '' }
+    $message = $message -replace "`r?`n", ' '
+
+    return @(
+        '이벤트 뷰어가 열리면 아래 항목을 클릭하세요.',
+        '',
+        ('Mode: ' + $ModeName),
+        ('Range: ' + $Start.ToString('yyyy-MM-dd HH:mm:ss') + ' ~ ' + $End.ToString('yyyy-MM-dd HH:mm:ss')),
+        '',
+        'Target event:',
+        '- Source: Winlogon',
+        ('- Event ID: ' + $TargetEvent.Id),
+        ('- Logged: ' + $TargetEvent.TimeCreated.ToString('yyyy-MM-dd tt h:mm:ss')),
+        '',
+        'General tab message:',
+        $message
+    ) -join "`r`n"
+}
+
 function Show-ErrorDialog {
     param([string]$Message)
     [System.Windows.Forms.MessageBox]::Show(
@@ -335,6 +363,7 @@ try {
     $missing = New-Object System.Collections.Generic.List[string]
     $primaryEvtxPath = $null
     $primaryGuidePath = $null
+    $primaryTargetText = $null
 
     foreach ($modeName in $modesToRender) {
         $targetId = $targetMap[$modeName]
@@ -356,6 +385,7 @@ try {
         if ($null -eq $primaryEvtxPath) {
             $primaryEvtxPath = $evtxPath
             $primaryGuidePath = $guidePath
+            $primaryTargetText = Get-TargetEventText -TargetEvent $selectedEvent[0] -ModeName $modeName -Start $StartTime -End $EndTime
         }
 
         $saved.Add($evtxPath) | Out-Null
@@ -367,11 +397,11 @@ try {
         throw 'No output file was created because no matching Winlogon event was found in the requested time range.'
     }
 
-    $summary = "Created file(s):`r`n" + ($saved -join "`r`n")
+    $summary = $primaryTargetText + "`r`n`r`nCreated file(s):`r`n" + ($saved -join "`r`n")
     if ($missing.Count -gt 0) {
         $summary += "`r`n`r`nNot found:`r`n" + ($missing -join "`r`n")
     }
-    $summary += "`r`n`r`nNext: double-click the .url file or the .evtx file to open Event Viewer manually."
+    $summary += "`r`n`r`nNext: click the '이벤트 뷰어 열기' button below, then click the target event shown above."
     Write-Output $saved
     Show-ResultForm -Message $summary -EvtxPath $primaryEvtxPath -GuidePath $primaryGuidePath
 } catch {
