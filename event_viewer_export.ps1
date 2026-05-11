@@ -7,11 +7,7 @@ param(
     [ValidateSet('Logon', 'Logoff', 'Both')]
     [string]$Mode = 'Both',
 
-    [string]$OutputDir = 'C:\codex_artifacts',
-
-    [int]$LaunchDelayMs = 5000,
-
-    [switch]$KeepExportedLog
+    [string]$OutputDir = 'C:\codex_artifacts'
 )
 
 Set-StrictMode -Version Latest
@@ -19,37 +15,6 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
-
-$signature = @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class NativeMethods
-{
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-
-    [DllImport("user32.dll")]
-    public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int nWidth, int nHeight, bool bRepaint);
-}
-'@
-
-Add-Type -TypeDefinition $signature
 
 $targetMap = @{
     Logon  = 7001
@@ -154,44 +119,23 @@ function Show-InputForm {
 }
 
 function Show-Info {
-    param(
-        [string]$Message,
-        [string]$Title = 'Event Viewer Image Export'
-    )
-
+    param([string]$Message)
     [System.Windows.Forms.MessageBox]::Show(
         $Message,
-        $Title,
+        'Event Viewer Image Export',
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information
     ) | Out-Null
 }
 
 function Show-ErrorDialog {
-    param(
-        [string]$Message,
-        [string]$Title = 'Event Viewer Image Export'
-    )
-
+    param([string]$Message)
     [System.Windows.Forms.MessageBox]::Show(
         $Message,
-        $Title,
+        'Event Viewer Image Export',
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Error
     ) | Out-Null
-}
-
-if (-not $PSBoundParameters.ContainsKey('StartTime') -or -not $PSBoundParameters.ContainsKey('EndTime')) {
-    $inputValues = Show-InputForm
-    $StartTime = $inputValues.StartTime
-    $EndTime = $inputValues.EndTime
-    if (-not $PSBoundParameters.ContainsKey('Mode')) {
-        $Mode = $inputValues.Mode
-    }
-}
-
-if ($EndTime -le $StartTime) {
-    throw 'EndTime must be later than StartTime.'
 }
 
 function New-FileStem {
@@ -208,87 +152,177 @@ function New-FileStem {
     return '{0}_to_{1}_{2}' -f $Start.ToString('yyyy-MM-dd_HHmmss'), $End.ToString('yyyy-MM-dd_HHmmss'), $Suffix.ToLowerInvariant()
 }
 
-function Get-FilteredEvents {
+function Get-LevelText {
+    param([int]$Id)
+    if ($Id -in 6008,7004,7031) { return '오류' }
+    if ($Id -in 10016,1014) { return '경고' }
+    return '정보'
+}
+
+function Get-DisplaySource {
+    param([System.Diagnostics.Eventing.Reader.EventRecord]$Event)
+    $source = $Event.ProviderName
+    if ($source -eq 'Microsoft-Windows-Winlogon') { return 'Winlogon' }
+    return $source
+}
+
+function Get-EventsForRange {
     param(
         [datetime]$Start,
-        [datetime]$End,
-        [int]$TargetId
+        [datetime]$End
     )
 
-    Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = $TargetId; ProviderName = 'Microsoft-Windows-Winlogon' } |
-        Where-Object { $_.TimeCreated -ge $Start -and $_.TimeCreated -le $End } |
+    Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $Start; EndTime = $End } |
         Sort-Object TimeCreated -Descending
 }
 
-function Export-WindowEvents {
+function Get-TargetEvent {
     param(
-        [datetime]$Start,
-        [datetime]$End,
-        [string]$Path,
+        [System.Collections.IEnumerable]$Events,
         [int]$TargetId
     )
 
-    $startUtc = $Start.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-    $endUtc = $End.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-    $query = "*[System[Provider[@Name='Microsoft-Windows-Winlogon'] and (EventID=$TargetId) and TimeCreated[@SystemTime>='$startUtc' and @SystemTime<='$endUtc']]]"
+    @($Events | Where-Object { $_.Id -eq $TargetId -and $_.ProviderName -eq 'Microsoft-Windows-Winlogon' } | Select-Object -First 1)
+}
 
-    $null = & wevtutil epl System $Path /q:$query
-    if (-not (Test-Path -LiteralPath $Path)) {
-        throw "Failed to export filtered log to $Path"
+function Convert-EventToRow {
+    param([System.Diagnostics.Eventing.Reader.EventRecord]$Event)
+
+    $description = $Event.FormatDescription()
+    if ($null -eq $description) { $description = '' }
+
+    [pscustomobject]@{
+        Level      = Get-LevelText -Id $Event.Id
+        Time       = $Event.TimeCreated
+        Source     = Get-DisplaySource -Event $Event
+        EventId    = $Event.Id
+        Task       = if ($Event.TaskDisplayName) { $Event.TaskDisplayName } else { '없음' }
+        Message    = $description -replace "`r?`n", ' '
+        RawEvent   = $Event
     }
 }
 
-function Wait-EventViewerWindow {
+function Trim-Cell {
+    param([string]$Text, [int]$Length)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    if ($Text.Length -le $Length) { return $Text }
+    return $Text.Substring(0, [Math]::Max(0, $Length - 3)) + '...'
+}
+
+function Save-ViewerStyleImage {
     param(
-        [int[]]$ExistingIds,
-        [int]$TimeoutSeconds = 30
+        [System.Collections.IEnumerable]$Rows,
+        [pscustomobject]$Selected,
+        [string]$OutputPath,
+        [datetime]$Start,
+        [datetime]$End
     )
 
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        $window = Get-Process mmc,eventvwr -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowHandle -ne 0 -and $_.Id -notin $ExistingIds } |
-            Sort-Object StartTime -Descending |
-            Select-Object -First 1
-
-        if ($window) {
-            return $window
-        }
-
-        Start-Sleep -Milliseconds 500
-    }
-
-    throw 'Timed out waiting for the Event Viewer window.'
-}
-
-function Test-InteractiveDesktop {
-    return [System.Environment]::UserInteractive
-}
-
-function Save-WindowScreenshot {
-    param(
-        [IntPtr]$WindowHandle,
-        [string]$OutputPath
-    )
-
-    $rect = New-Object NativeMethods+RECT
-    $ok = [NativeMethods]::GetWindowRect($WindowHandle, [ref]$rect)
-    if (-not $ok) {
-        throw 'Unable to read Event Viewer window bounds.'
-    }
-
-    $width = $rect.Right - $rect.Left
-    $height = $rect.Bottom - $rect.Top
-    if ($width -le 0 -or $height -le 0) {
-        throw 'Invalid Event Viewer window size.'
-    }
-
+    $rows = @($Rows | Select-Object -First 14)
+    $width = 1660
+    $height = 960
     $bmp = New-Object System.Drawing.Bitmap $width, $height
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bmp.Size)
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+    $g.Clear([System.Drawing.Color]::White)
+
+    $font = New-Object System.Drawing.Font('Malgun Gothic', 11)
+    $smallFont = New-Object System.Drawing.Font('Malgun Gothic', 9)
+    $titleFont = New-Object System.Drawing.Font('Malgun Gothic', 11, [System.Drawing.FontStyle]::Bold)
+    $linePen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(210,210,210))
+    $darkBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(110,110,110))
+    $selBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(228,228,228))
+    $textBrush = [System.Drawing.Brushes]::Black
+
+    $g.FillRectangle($darkBrush, 0, 0, $width, 24)
+    $g.DrawString('시스템', $titleFont, [System.Drawing.Brushes]::White, 12, 2)
+    $g.DrawString(('이벤트 수: ' + $rows.Count), $smallFont, [System.Drawing.Brushes]::White, 85, 4)
+
+    $filterText = '필터링됨: 로그: System; 원본: 날짜 범위: {0}부터 {1}까지. 이벤트 수: {2}' -f `
+        $Start.ToString('yyyy-MM-dd tt h:mm:ss'), $End.ToString('yyyy-MM-dd tt h:mm:ss'), $rows.Count
+    $g.DrawString($filterText, $smallFont, $textBrush, 10, 31)
+
+    $headerY = 54
+    $g.DrawLine($linePen, 0, $headerY, $width, $headerY)
+    $g.DrawString('수준', $font, $textBrush, 14, 59)
+    $g.DrawString('날짜 및 시간', $font, $textBrush, 120, 59)
+    $g.DrawString('원본', $font, $textBrush, 330, 59)
+    $g.DrawString('이벤트 ID', $font, $textBrush, 785, 59)
+    $g.DrawString('작업 범주', $font, $textBrush, 875, 59)
+
+    $rowHeight = 27
+    $selectedIndex = [Math]::Max(0, [Array]::IndexOf($rows, ($rows | Where-Object { $_.EventId -eq $Selected.EventId -and $_.Time -eq $Selected.Time } | Select-Object -First 1)))
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        $y = 84 + ($i * $rowHeight)
+        if ($i -eq $selectedIndex) {
+            $g.FillRectangle($selBrush, 0, $y - 2, $width, $rowHeight)
+        }
+        $g.DrawLine($linePen, 0, $y + 23, $width, $y + 23)
+        $g.DrawString($rows[$i].Level, $font, $textBrush, 14, $y)
+        $g.DrawString($rows[$i].Time.ToString('yyyy-MM-dd tt h:mm:ss'), $font, $textBrush, 120, $y)
+        $g.DrawString((Trim-Cell $rows[$i].Source 28), $font, $textBrush, 330, $y)
+        $g.DrawString([string]$rows[$i].EventId, $font, $textBrush, 785, $y)
+        $g.DrawString((Trim-Cell $rows[$i].Task 10), $font, $textBrush, 875, $y)
+    }
+
+    $detailTop = 480
+    $g.DrawRectangle($linePen, 0, $detailTop, $width - 1, $height - $detailTop - 1)
+    $g.DrawString(('이벤트 {0}, {1}' -f $Selected.EventId, $Selected.Source), $font, $textBrush, 10, $detailTop + 6)
+    $g.DrawString('일반', $font, $textBrush, 16, $detailTop + 34)
+    $g.DrawString('자세히', $font, $textBrush, 72, $detailTop + 34)
+    $g.DrawRectangle($linePen, 24, $detailTop + 64, $width - 48, 360)
+
+    $selectedDescription = $Selected.RawEvent.FormatDescription()
+    if ($null -eq $selectedDescription) { $selectedDescription = '' }
+    $msg = ($selectedDescription -replace "`r", '') -split "`n"
+    $msgY = $detailTop + 78
+    foreach ($line in $msg) {
+        $clean = $line.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($clean)) {
+            $g.DrawString($clean, $font, $textBrush, 36, $msgY)
+            $msgY += 24
+            if ($msgY -gt ($detailTop + 220)) { break }
+        }
+    }
+
+    $infoY = $detailTop + 438
+    $g.DrawString('로그 이름(M):', $font, $textBrush, 32, $infoY)
+    $g.DrawString('시스템', $font, $textBrush, 168, $infoY)
+    $g.DrawString('원본(S):', $font, $textBrush, 320, $infoY)
+    $g.DrawString($Selected.Source, $font, $textBrush, 420, $infoY)
+
+    $g.DrawString('이벤트 ID(E):', $font, $textBrush, 32, $infoY + 38)
+    $g.DrawString([string]$Selected.EventId, $font, $textBrush, 168, $infoY + 38)
+    $g.DrawString('로그된 날짜(D):', $font, $textBrush, 320, $infoY + 38)
+    $g.DrawString($Selected.Time.ToString('yyyy-MM-dd tt h:mm:ss'), $font, $textBrush, 460, $infoY + 38)
+
+    $g.DrawString('수준(L):', $font, $textBrush, 32, $infoY + 76)
+    $g.DrawString($Selected.Level, $font, $textBrush, 168, $infoY + 76)
+    $g.DrawString('컴퓨터(R):', $font, $textBrush, 320, $infoY + 76)
+    $g.DrawString($Selected.RawEvent.MachineName, $font, $textBrush, 460, $infoY + 76)
+
     $bmp.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose()
     $bmp.Dispose()
+    $font.Dispose()
+    $smallFont.Dispose()
+    $titleFont.Dispose()
+    $linePen.Dispose()
+    $darkBrush.Dispose()
+    $selBrush.Dispose()
+}
+
+if (-not $PSBoundParameters.ContainsKey('StartTime') -or -not $PSBoundParameters.ContainsKey('EndTime')) {
+    $inputValues = Show-InputForm
+    $StartTime = $inputValues.StartTime
+    $EndTime = $inputValues.EndTime
+    if (-not $PSBoundParameters.ContainsKey('Mode')) {
+        $Mode = $inputValues.Mode
+    }
+}
+
+if ($EndTime -le $StartTime) {
+    throw 'EndTime must be later than StartTime.'
 }
 
 if (-not (Test-Path -LiteralPath $OutputDir)) {
@@ -296,58 +330,33 @@ if (-not (Test-Path -LiteralPath $OutputDir)) {
 }
 
 try {
-    if (-not (Test-InteractiveDesktop)) {
-        throw 'This tool must run in an interactive Windows desktop session.'
+    $allEvents = @(Get-EventsForRange -Start $StartTime -End $EndTime)
+    if ($allEvents.Count -eq 0) {
+        throw 'No System log events were found in the requested time range.'
     }
 
+    $rows = @($allEvents | Select-Object -First 14 | ForEach-Object { Convert-EventToRow -Event $_ })
     $modesToRender = if ($Mode -eq 'Both') { @('Logon', 'Logoff') } else { @($Mode) }
     $saved = New-Object System.Collections.Generic.List[string]
     $missing = New-Object System.Collections.Generic.List[string]
 
     foreach ($modeName in $modesToRender) {
         $targetId = $targetMap[$modeName]
-        $targetEvents = @(Get-FilteredEvents -Start $StartTime -End $EndTime -TargetId $targetId)
-        $selected = @($targetEvents | Select-Object -First 1)
-
-        if (-not $selected) {
+        $selectedEvent = @(Get-TargetEvent -Events $allEvents -TargetId $targetId)
+        if (-not $selectedEvent) {
             $missing.Add("$modeName(ID $targetId)") | Out-Null
             continue
         }
 
+        $selectedRow = Convert-EventToRow -Event $selectedEvent[0]
+        if (-not ($rows | Where-Object { $_.EventId -eq $selectedRow.EventId -and $_.Time -eq $selectedRow.Time })) {
+            $rows = @($selectedRow) + @($rows | Select-Object -First 13)
+        }
+
         $stem = New-FileStem -Start $StartTime -End $EndTime -Suffix $modeName
-        $evtxPath = Join-Path $OutputDir ($stem + '.evtx')
         $pngPath = Join-Path $OutputDir ($stem + '.png')
-
-        Export-WindowEvents -Start $StartTime -End $EndTime -Path $evtxPath -TargetId $targetId
-
-        $beforeIds = @(Get-Process mmc,eventvwr -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-        Start-Process -FilePath eventvwr.exe -ArgumentList "/l:`"$evtxPath`"" | Out-Null
-
-        Start-Sleep -Milliseconds $LaunchDelayMs
-        $windowProc = Wait-EventViewerWindow -ExistingIds $beforeIds
-
-        [NativeMethods]::ShowWindowAsync($windowProc.MainWindowHandle, 5) | Out-Null
-        Start-Sleep -Milliseconds 300
-        [NativeMethods]::MoveWindow($windowProc.MainWindowHandle, 20, 20, 1600, 980, $true) | Out-Null
-        Start-Sleep -Milliseconds 500
-        [NativeMethods]::SetForegroundWindow($windowProc.MainWindowHandle) | Out-Null
-        Start-Sleep -Milliseconds 1500
-
-        Save-WindowScreenshot -WindowHandle $windowProc.MainWindowHandle -OutputPath $pngPath
+        Save-ViewerStyleImage -Rows $rows -Selected $selectedRow -OutputPath $pngPath -Start $StartTime -End $EndTime
         $saved.Add($pngPath) | Out-Null
-
-        try {
-            $windowProc.CloseMainWindow() | Out-Null
-            Start-Sleep -Milliseconds 500
-            if (-not $windowProc.HasExited) {
-                $windowProc | Stop-Process -Force
-            }
-        } catch {
-        }
-
-        if (-not $KeepExportedLog) {
-            Remove-Item -LiteralPath $evtxPath -ErrorAction SilentlyContinue
-        }
     }
 
     if ($saved.Count -eq 0) {
