@@ -127,6 +127,60 @@ function Show-Info {
     ) | Out-Null
 }
 
+function Show-ResultForm {
+    param(
+        [string]$Message,
+        [string]$EvtxPath,
+        [string]$GuidePath
+    )
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Event Viewer Export'
+    $form.StartPosition = 'CenterScreen'
+    $form.Size = New-Object System.Drawing.Size(620, 360)
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.TopMost = $true
+    $form.Font = New-Object System.Drawing.Font('Malgun Gothic', 10)
+
+    $text = New-Object System.Windows.Forms.TextBox
+    $text.Location = New-Object System.Drawing.Point(15, 15)
+    $text.Size = New-Object System.Drawing.Size(575, 220)
+    $text.Multiline = $true
+    $text.ReadOnly = $true
+    $text.ScrollBars = 'Vertical'
+    $text.Text = $Message
+    $form.Controls.Add($text)
+
+    $openButton = New-Object System.Windows.Forms.Button
+    $openButton.Location = New-Object System.Drawing.Point(15, 255)
+    $openButton.Size = New-Object System.Drawing.Size(170, 36)
+    $openButton.Text = '이벤트 뷰어 열기'
+    $openButton.Add_Click({
+        Start-Process -FilePath $EvtxPath
+    })
+    $form.Controls.Add($openButton)
+
+    $guideButton = New-Object System.Windows.Forms.Button
+    $guideButton.Location = New-Object System.Drawing.Point(200, 255)
+    $guideButton.Size = New-Object System.Drawing.Size(150, 36)
+    $guideButton.Text = '안내 파일 열기'
+    $guideButton.Add_Click({
+        Start-Process -FilePath $GuidePath
+    })
+    $form.Controls.Add($guideButton)
+
+    $closeButton = New-Object System.Windows.Forms.Button
+    $closeButton.Location = New-Object System.Drawing.Point(470, 255)
+    $closeButton.Size = New-Object System.Drawing.Size(120, 36)
+    $closeButton.Text = '닫기'
+    $closeButton.Add_Click({ $form.Close() })
+    $form.Controls.Add($closeButton)
+
+    [void]$form.ShowDialog()
+}
+
 function Show-ErrorDialog {
     param([string]$Message)
     [System.Windows.Forms.MessageBox]::Show(
@@ -279,6 +333,8 @@ try {
     $modesToRender = if ($Mode -eq 'Both') { @('Logon', 'Logoff') } else { @($Mode) }
     $saved = New-Object System.Collections.Generic.List[string]
     $missing = New-Object System.Collections.Generic.List[string]
+    $primaryEvtxPath = $null
+    $primaryGuidePath = $null
 
     foreach ($modeName in $modesToRender) {
         $targetId = $targetMap[$modeName]
@@ -297,6 +353,11 @@ try {
         New-InternetShortcut -ShortcutPath $shortcutPath -TargetPath $evtxPath
         Save-GuideFile -GuidePath $guidePath -EvtxPath $evtxPath -ShortcutPath $shortcutPath -TargetEvent $selectedEvent[0] -ModeName $modeName -Start $StartTime -End $EndTime
 
+        if ($null -eq $primaryEvtxPath) {
+            $primaryEvtxPath = $evtxPath
+            $primaryGuidePath = $guidePath
+        }
+
         $saved.Add($evtxPath) | Out-Null
         $saved.Add($shortcutPath) | Out-Null
         $saved.Add($guidePath) | Out-Null
@@ -312,7 +373,7 @@ try {
     }
     $summary += "`r`n`r`nNext: double-click the .url file or the .evtx file to open Event Viewer manually."
     Write-Output $saved
-    Show-Info -Message $summary
+    Show-ResultForm -Message $summary -EvtxPath $primaryEvtxPath -GuidePath $primaryGuidePath
 } catch {
     Show-ErrorDialog -Message $_.Exception.Message
     throw
